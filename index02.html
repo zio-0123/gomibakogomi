@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ゴミ箱マップ</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        #mode-toggle {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+        }
+        #locate-me {
+            position: fixed;
+            top: 50px;
+            right: 10px;
+            z-index: 1000;
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+        }
+    </style>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+    <button id="mode-toggle">登録モードに変更</button>
+    <button id="locate-me">現在地を表示</button>
+    <div id="map"></div>
+
+    <script>
+        const GITHUB_REPO = "zio-0123/gomibako-search-map";
+        const GITHUB_TOKEN = "your-personal-access-token";
+        let isEditMode = false; // 初期モードは閲覧モード
+
+        const map = L.map('map').setView([35.6895, 139.6917], 13);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let trashBins = [];
+        let markers = [];
+        let currentLocationMarker = null;
+
+        // GitHub からデータを取得してピンを表示
+        async function fetchTrashBins() {
+            const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/trash_bins.json`;
+            try {
+                const response = await fetch(url, {
+                    headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    trashBins = JSON.parse(atob(data.content));
+                    trashBins.forEach(addTrashBinToMap);
+                } else if (response.status === 404) {
+                    // 初回ファイルがない場合
+                    console.log("trash_bins.json が見つかりません。新しく作成されます。");
+                    trashBins = [];
+                } else {
+                    console.error("データ取得失敗:", response.status, response.statusText);
+                }
+            } catch (error) {
+                console.error("データ取得エラー:", error);
+            }
+        }
+
+        // GitHub にデータを保存
+        async function saveTrashBinsToServer() {
+            const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/trash_bins.json`;
+            let sha = null;
+            try {
+                sha = await getFileSHA();
+            } catch (error) {
+                console.log("ファイルがまだ存在しないため、新規作成します。");
+            }
+
+            try {
+                const response = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        Authorization: `Bearer ${GITHUB_TOKEN}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        message: "Update trash bins",
+                        content: btoa(JSON.stringify(trashBins)),
+                        sha: sha
+                    })
+                });
+
+                if (!response.ok) {
+                    console.error("データ保存失敗:", await response.text());
+                }
+            } catch (error) {
+                console.error("データ保存エラー:", error);
+            }
+        }
+
+        // SHA を取得
+        async function getFileSHA() {
+            const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/trash_bins.json`;
+            const response = await fetch(url, {
+                headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
+            });
+            const data = await response.json();
+            return data.sha;
+        }
+
+        // 地図をクリックしてピンを追加（登録モードの場合のみ）
+        map.on('click', function(e) {
+            if (!isEditMode) {
+                alert("現在は閲覧モードです。ピンを追加するには登録モードに切り替えてください。");
+                return;
+            }
+
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            const description = prompt("ゴミ箱の説明を入力してください:", "新しいゴミ箱");
+            if (!description) return;
+
+            const newBin = { id: Date.now(), lat: lat, lng: lng, description: description };
+            trashBins.push(newBin);
+            addTrashBinToMap(newBin);
+
+            saveTrashBinsToServer();
+        });
+
+        // ピンを地図に追加
+        function addTrashBinToMap(bin) {
+            const marker = L.marker([bin.lat, bin.lng]).addTo(map)
+                .bindPopup(bin.description);
+            markers.push(marker);
+        }
+
+        // 現在地を表示
+        document.getElementById('locate-me').addEventListener('click', function() {
+            if (!navigator.geolocation) {
+                alert("位置情報がサポートされていません。");
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+
+                    // 現在地マーカーを削除して新しく追加
+                    if (currentLocationMarker) {
+                        map.removeLayer(currentLocationMarker);
+                    }
+
+                    currentLocationMarker = L.circleMarker([lat, lng], {
+                        color: 'red',
+                        radius: 6,
+                        fillOpacity: 0.8
+                    }).addTo(map).bindPopup("あなたの現在地").openPopup();
+
+                    map.setView([lat, lng], 15);
+                },
+                function() {
+                    alert("現在地を取得できませんでした。");
+                }
+            );
+        });
+
+        // モード切り替えボタン
+        document.getElementById('mode-toggle').addEventListener('click', function() {
+            isEditMode = !isEditMode;
+            this.textContent = isEditMode ? "閲覧モードに変更" : "登録モードに変更";
+        });
+
+        // 初期化
+        fetchTrashBins(); // ページ読み込み時にピンを取得して表示
+    </script>
+</body>
+</html>
